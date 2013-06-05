@@ -1,0 +1,80 @@
+#!/usr/bin/python
+import HTSeq
+import pysam
+import sys
+import gzip
+import numpy
+from matplotlib import pyplot as plt
+#program expects an indexed and sorted bam and a bed file of gene regions
+
+def readGenes (geneFile): 
+#geneFile should be a valid 6 column bed
+    genes = {}
+    for line in geneFile: 
+        if line.startswith('chr\tstart'):
+            continue
+        chr,start,end,name,score,strand = line.strip().split('\t')
+        interval = HTSeq.GenomicInterval(chr,int(start),int(end),strand)
+        genes[name] = interval
+    return(genes)
+    
+
+def bamCoverage (bamfile, genes, halfwin):
+    fragmentsize = 200 
+    frame = {}
+    for gene in genes: 
+        iv = genes[gene]
+        profile = numpy.zeros(2*halfwin, dtype='i')
+        window = HTSeq.GenomicInterval(iv.chrom, iv.start_d - halfwin, iv.start_d + halfwin, '.' ) 
+        for almnt in bamfile[window]: 
+            almnt.iv.length = fragmentsize
+            if iv.strand == '+': 
+                start_in_window = almnt.iv.start - iv.start_d + halfwin
+                end_in_window = almnt.iv.end - iv.start_d + halfwin
+            else: 
+                start_in_window = iv.start_d + halfwin - almnt.iv.end
+                end_in_window = iv.start_d + halfwin - almnt.iv.start
+            profile[start_in_window:end_in_window]+=1
+        frame[gene] = profile
+    return(frame)
+
+def excludeRegions(genedict): 
+    e1 = gzip.open('/home/jraab/Dropbox/labWork/compute/analysis/chipseq/misc/PHF8/wgEncodeDukeMapabilityRegionsExcludable.bed.gz')
+    e2 = gzip.open('/home/jraab/Dropbox/labWork/compute/analysis/chipseq/misc/PHF8/wgEncodeDacMapabilityConsensusExcludable.bed.gz')
+    excludedRegions = []
+    cleanGenes ={} 
+    for l1 in e1: 
+        chr,start,end,name,score,strand=l1.split('\t')
+        interval = HTSeq.GenomicInterval(chr, int(start), int(end), '.')
+        excludedRegions.append(interval)
+    for l2 in e2: 
+        chr,start,end,name,score,strand=l2.split()
+        interval = HTSeq.GenomicInterval(chr, int(start), int(end), '.')
+        excludedRegions.append(interval)
+    for key in genedict: 
+        gene = genedict[key]
+        hit = 0
+        for interval in excludedRegions: 
+            if interval.overlaps(gene): 
+                hit=1
+        if hit==0: 
+            cleanGenes[key] = gene
+    return(cleanGenes)      
+    
+     
+bedfile = open(sys.argv[1])
+bamfile = HTSeq.BAM_Reader(sys.argv[2])
+genes = readGenes(bedfile)
+genes = excludeRegions(genes)
+halfwin=2000
+
+bam = bamCoverage(bamfile, genes, halfwin)
+profile = numpy.zeros(2*halfwin)
+numpy.set_printoptions(threshold=None,)
+
+for g in bam: 
+    profile += bam[g]
+
+plt.plot(numpy.arange(-halfwin, halfwin), profile/len(bam))
+plt.show()    
+
