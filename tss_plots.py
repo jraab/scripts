@@ -27,13 +27,13 @@ def read_feature(gtffile):
         #    continue
 	if strand is '+' or strand is '-':
 	    strand = strand
-        else :
-            strand = "."
-        start = int(start)
-        end = int(end) 
+   else :
+      strand = "."
+   start = int(start)
+   end = int(end) 
 	midpt = start+end/2
-        gi  = HTSeq.GenomicInterval(chr,midpt,midpt+1,strand)
-        tsspos.add( gi.start_d_as_pos )
+   gi  = HTSeq.GenomicInterval(chr,midpt,midpt+1,strand)
+   tsspos.add( gi.start_d_as_pos )
     return(tsspos)	
 def coverage_plot(tsspos,bamfile,halfwinwidth,fragmentsize):
     profile = numpy.zeros (2*halfwinwidth,dtype = "float")
