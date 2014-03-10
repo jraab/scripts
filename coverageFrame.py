@@ -20,8 +20,10 @@ parser.add_argument('-p', help='peakfile')
 parser.add_argument('-b', help='bamfile')
 parser.add_argument('-i', nargs='?', help='input file to normalize enrichment to')
 parser.add_argument('-bamname', help='bamfile name - for naming output')
-parser.add_argument('-w', default=1000, help='size of enrichment window')
-parser.add_argument('-o', nargs='?', help='output directory')
+parser.add_argument('-pkwin', default=1000, help='size of enrichment window')
+parser.add_argument('-o', nargs='?', default='.',  help='output directory')
+parser.add_argument('-w', default = 5000, help='bp to output in coverage file')
+parser.add_argument('-bg', default = 50000, help='size of the background window to calculate enrichment')
 
 args = parser.parse_args()
 #############################################
@@ -50,8 +52,8 @@ def readGenes (fname):
                sys.error(fname, 'Not a valid bed')
          if name == '.': 
             name = 'peak'+str(i)
-         iv = HTSeq.GenomicInterval(chrom, int(start), int(end), strand) 
-         genes[name] = iv
+         iv = HTSeq.GenomicInterval(chrom, int(start), int(end), strand)  
+         genes[str(name)] = iv
          i += 1
    return(genes) 
 
@@ -74,8 +76,8 @@ def bamCoverage (pos_dic, bamfile, halfwinwidth, fragmentsize = 200 ):
             start_in_window = almnt.start - p.start_d + halfwinwidth
             end_in_window = almnt.end - p.start_d + halfwinwidth
          else: 
-            start_in_window = p.start + halfwinwidth - almnt.end
-            end_in_window = p.start_d + halfwinwidth - almnt.end
+            start_in_window = p.start_d + halfwinwidth - almnt.end
+            end_in_window = p.start_d + halfwinwidth - almnt.start
          start_in_window = max(start_in_window, 0)
          end_in_window = min(end_in_window, 2*halfwinwidth)
          if start_in_window >= 2*halfwinwidth or end_in_window < 0 : 
@@ -125,33 +127,79 @@ def readDepth(bamfile):
 def rpm(val, reads): 
    return( val * 1e6/reads)
 
+def enrichmentScore(numpy_vec, background_window, peak_window):
+   """
+   Given a numpy array calculate how much enrichment over the background window is
+   found in the peak_window
+   Simplistic socring of log2(median(small_window)+1/median(background)+1)
+   """
+   mid = int(len(numpy_vec)/2)
+   subset = numpy_vec[mid-peak_window: mid+peak_window] 
+   num = np.median(subset) + 1
+   den = np.median(numpy_vec) + 1
+   enrichment = np.log2(num/den)
+   return(enrichment)
+
+def saveHDF(from_dict, fname, group): 
+   length_vals = len(from_dict.values()[0])
+   class Coverage(tables.IsDescription): 
+      name = tables.StringCol(24)
+      vals = tables.Float64Col(shape=(1,length_vals) )
+   f = tables.open_file(fname, 'w')
+   t = f.create_table(f.root, 'coverages', Coverage)
+   cov = t.row
+   for k,v in from_dict.iteritems(): 
+      cov['name'] = k
+      cov['vals'] = v
+      cov.append()
+   t.flush()
+   f.close()
+
 ##############################################################
 def main(): 
    genes = readGenes(args.p)
    genes = excludeRegions(genes)
    peak_depth  = readDepth(args.b)
-   peak_coverage = bamCoverage(genes, args.b, int(args.w)/2)
+   peak_coverage = bamCoverage(genes, args.b, int(args.bg)/2)
    peak_coverage = {k:rpm(v, peak_depth) for k,v in peak_coverage.iteritems() } 
+
+
+
+   #get info for the input file if included
    if args.i: 
       input_depth = readDepth(args.i)
-      input_coverage = bamCoverage(genes, args.i, int(args.w)/2)
+      input_coverage = bamCoverage(genes, args.i, int(args.bg)/2)
       input_coverage = {k:rpm(v, input_depth) for k,v in input_coverage.iteritems() } 
    
+
+   #normalize to input (as IP+1/Input+1)   
    output_coverage = {}
    for k,v in peak_coverage.iteritems(): 
-      input = input_coverage[k]
-      out_val = (v+1)/(input+1)
+      try: 
+         input = input_coverage[k]
+         out_val = (v+1)/(input+1)
+      except: 
+         out_val = v
       output_coverage[k] = out_val
 
-   df = pd.DataFrame.from_dict(output_coverage, orient='index')
-   out_dir = args.o + '/coverages/'
-   if not os.path.exists(out_dir): 
-      os.mkdir(out_dir)
-   out_fn = out_dir+ args.bamname+'_coverage.h5'
-   store = pd.HDFStore(out_fn)
-   store['df'] = df
-   store.close()
 
+   #calculate enrichment score over TSS 
+   enrichments = {k:enrichmentScore(v, args.bg, args.pkwin) for k,v in output_coverage.iteritems() } 
+
+   #convert to dataframe for saving
+   #df = pd.DataFrame.from_dict(output_coverage, orient='index')
+   enrich_df = pd.DataFrame.from_dict(enrichments, orient='index')
+   cov_dir = args.o+'/coverages/'
+   enrich_dir = args.o+'/enrichments/'
+
+   for a in cov_dir,enrich_dir: 
+      if not os.path.exists(a): 
+         os.mkdir(a)
+
+   out_fn = cov_dir+ args.bamname+'_coverage.h5'
+   enrich_fn = enrich_dir+args.bamname+'_enrichment.csv'
+   saveHDF(output_coverage, out_fn, 'group')
+   enrich_df.to_csv(enrich_fn, sep=',', header=False)
 
 if __name__ == '__main__': 
    main()
