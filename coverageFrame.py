@@ -20,13 +20,16 @@ parser.add_argument('-p', help='peakfile')
 parser.add_argument('-b', help='bamfile')
 parser.add_argument('-i', nargs='?', help='input file to normalize enrichment to')
 parser.add_argument('-bamname', help='bamfile name - for naming output')
-parser.add_argument('-pkwin', default=1000, help='size of enrichment window')
+parser.add_argument('-pkwin', default=100, help='size of enrichment window')
 parser.add_argument('-o', nargs='?', default='.',  help='output directory')
 parser.add_argument('-w', default = 5000, help='bp to output in coverage file')
-parser.add_argument('-bg', default = 50000, help='size of the background window to calculate enrichment')
-
+parser.add_argument('-bg', default = 20000, help='size of the background window to calculate enrichment')
 args = parser.parse_args()
 #############################################
+args.pkwin = int(args.pkwin)
+args.w = int(args.w)
+args.bg = int(args.bg)
+
 #function defs
 def readGenes (fname): 
    """
@@ -140,6 +143,14 @@ def enrichmentScore(numpy_vec, background_window, peak_window):
    enrichment = np.log2(num/den)
    return(enrichment)
 
+def subset_vec(numpy_vec, winsize):
+   midpt = int(len(numpy_vec)/2)
+   halfwin = int(winsize/2)
+   try: 
+      return(numpy_vec[midpt-halfwin:midpt+halfwin]) 
+   except: 
+      print midpt, type(midpt), halfwin, type(halfwin)
+
 def saveHDF(from_dict, fname, group): 
    length_vals = len(from_dict.values()[0])
    class Coverage(tables.IsDescription): 
@@ -153,6 +164,7 @@ def saveHDF(from_dict, fname, group):
       cov['vals'] = v
       cov.append()
    t.flush()
+   f.root.coverages.cols.name.create_index()
    f.close()
 
 ##############################################################
@@ -161,16 +173,12 @@ def main():
    genes = excludeRegions(genes)
    peak_depth  = readDepth(args.b)
    peak_coverage = bamCoverage(genes, args.b, int(args.bg)/2)
-   peak_coverage = {k:rpm(v, peak_depth) for k,v in peak_coverage.iteritems() } 
-
-
-
+   peak_coverage = {k:rpm(v, peak_depth) for k,v in peak_coverage.iteritems() }  
    #get info for the input file if included
    if args.i: 
       input_depth = readDepth(args.i)
       input_coverage = bamCoverage(genes, args.i, int(args.bg)/2)
-      input_coverage = {k:rpm(v, input_depth) for k,v in input_coverage.iteritems() } 
-   
+      input_coverage = {k:rpm(v, input_depth) for k,v in input_coverage.iteritems() }  
 
    #normalize to input (as IP+1/Input+1)   
    output_coverage = {}
@@ -180,15 +188,17 @@ def main():
          out_val = (v+1)/(input+1)
       except: 
          out_val = v
-      output_coverage[k] = out_val
-
-
+      output_coverage[k] = out_val 
+   peak_coverage = None
+   input_coverage = None
    #calculate enrichment score over TSS 
-   enrichments = {k:enrichmentScore(v, args.bg, args.pkwin) for k,v in output_coverage.iteritems() } 
-
-   #convert to dataframe for saving
-   #df = pd.DataFrame.from_dict(output_coverage, orient='index')
-   enrich_df = pd.DataFrame.from_dict(enrichments, orient='index')
+   enrichments = {k:enrichmentScore(v, int(args.bg), int(args.pkwin)) for k,v in output_coverage.iteritems() }  
+   subsets = {k:subset_vec(v,args.w) for k,v in output_coverage.iteritems()} 
+   #convert to dataframe for saving 
+   enrich_df = pd.DataFrame.from_dict(enrichments, orient='index') 
+   enrich_df.index = [x.replace('"', '') for x in enrich_df.index.values ] 
+   enrich_df.index.name = 'gene'
+   enrich_df.columns = ['enrichment'] 
    cov_dir = args.o+'/coverages/'
    enrich_dir = args.o+'/enrichments/'
 
@@ -198,8 +208,14 @@ def main():
 
    out_fn = cov_dir+ args.bamname+'_coverage.h5'
    enrich_fn = enrich_dir+args.bamname+'_enrichment.csv'
-   saveHDF(output_coverage, out_fn, 'group')
-   enrich_df.to_csv(enrich_fn, sep=',', header=False)
+   #saveHDF(subsets, out_fn, 'group')
+   subsets = pd.DataFrame.from_dict(subsets, orient='index')
+   subsets.index = [x.replace('"', '') for x in subsets.index.values ] 
+   subsets.index.name = 'gene'
+   store = pd.HDFStore(out_fn)
+   store['coverages'] = subsets
+   store.close()
+   enrich_df.to_csv(enrich_fn, sep=',') 
 
 if __name__ == '__main__': 
    main()
