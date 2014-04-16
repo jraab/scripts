@@ -19,16 +19,20 @@ parser= argparse.ArgumentParser(description='calculate enrichment at a set of in
 parser.add_argument('-p', help='peakfile')
 parser.add_argument('-b', help='bamfile')
 parser.add_argument('-i', nargs='?', help='input file to normalize enrichment to')
+parser.add_argument('-pname', help='peakfile name - for naming output')
 parser.add_argument('-bamname', help='bamfile name - for naming output')
 parser.add_argument('-pkwin', default=100, help='size of enrichment window')
 parser.add_argument('-o', nargs='?', default='.',  help='output directory')
 parser.add_argument('-w', default = 5000, help='bp to output in coverage file')
 parser.add_argument('-bg', default = 20000, help='size of the background window to calculate enrichment')
+parser.add_argument('-m', action='store_true', help='calculate midpoint of interval? to center signal')
 args = parser.parse_args()
 #############################################
 args.pkwin = int(args.pkwin)
 args.w = int(args.w)
 args.bg = int(args.bg)
+if not os.path.exists(args.o): 
+   os.makedirs(args.o)
 
 #function defs
 def readGenes (fname): 
@@ -55,20 +59,26 @@ def readGenes (fname):
                sys.error(fname, 'Not a valid bed')
          if name == '.': 
             name = 'peak'+str(i)
-         iv = HTSeq.GenomicInterval(chrom, int(start), int(end), strand)  
+         else: 
+            name = os.path.basename(name) #macs puts the full path in this name field, if it hasn't been cleaned up yet this will
+         if args.m:  
+            start = (int(start)+int(end)) / 2
+            end = int(start +1 )
+         iv = HTSeq.GenomicInterval(chrom, start, end, strand)   
          genes[str(name)] = iv
          i += 1
    return(genes) 
 
 def bamCoverage (pos_dic, bamfile, halfwinwidth, fragmentsize = 200 ):  
    frame = {}
-   bf = pysam.Samfile(bamfile, 'rb')
+   bf = pysam.Samfile(bamfile, 'rb')  
    for key in pos_dic:
       p = pos_dic[key] 
       profile = np.zeros(2*halfwinwidth, dtype='float')
-      window = HTSeq.GenomicInterval(p.chrom, p.start_d-halfwinwidth-fragmentsize, p.start_d+halfwinwidth+fragmentsize, '.') 
+      window = HTSeq.GenomicInterval(p.chrom, p.start_d-halfwinwidth-fragmentsize, p.start_d+halfwinwidth+fragmentsize, '.')  
       if window.start < 0: 
-         continue
+         print 'window issue'
+         continue 
       for a in bf.fetch(p.chrom, window.start, window.end): 
          if a.is_reverse: 
             strand = '-'
@@ -85,7 +95,7 @@ def bamCoverage (pos_dic, bamfile, halfwinwidth, fragmentsize = 200 ):
          end_in_window = min(end_in_window, 2*halfwinwidth)
          if start_in_window >= 2*halfwinwidth or end_in_window < 0 : 
             continue
-         profile[start_in_window:end_in_window] += 1
+         profile[start_in_window:end_in_window] += 1 
       frame[key] = profile
    return(frame)
     
@@ -138,8 +148,8 @@ def enrichmentScore(numpy_vec, background_window, peak_window):
    """
    mid = int(len(numpy_vec)/2)
    subset = numpy_vec[mid-peak_window: mid+peak_window] 
-   num = np.median(subset) + 1
-   den = np.median(numpy_vec) + 1
+   num = (np.mean(subset)*100) + 1
+   den = (np.mean(numpy_vec)*100) + 1
    enrichment = np.log2(num/den)
    return(enrichment)
 
@@ -170,9 +180,9 @@ def saveHDF(from_dict, fname, group):
 ##############################################################
 def main(): 
    genes = readGenes(args.p)
-   genes = excludeRegions(genes)
-   peak_depth  = readDepth(args.b)
-   peak_coverage = bamCoverage(genes, args.b, int(args.bg)/2)
+   genes = excludeRegions(genes) 
+   peak_depth  = readDepth(args.b)  
+   peak_coverage = bamCoverage(genes, args.b, int(args.bg)/2) 
    peak_coverage = {k:rpm(v, peak_depth) for k,v in peak_coverage.iteritems() }  
    #get info for the input file if included
    if args.i: 
@@ -180,7 +190,7 @@ def main():
       input_coverage = bamCoverage(genes, args.i, int(args.bg)/2)
       input_coverage = {k:rpm(v, input_depth) for k,v in input_coverage.iteritems() }  
 
-   #normalize to input (as IP+1/Input+1)   
+   #normalize to input (as IP+1/Input+1)    
    output_coverage = {}
    for k,v in peak_coverage.iteritems(): 
       try: 
@@ -190,12 +200,12 @@ def main():
          out_val = v
       output_coverage[k] = out_val 
    peak_coverage = None
-   input_coverage = None
+   input_coverage = None 
    #calculate enrichment score over TSS 
    enrichments = {k:enrichmentScore(v, int(args.bg), int(args.pkwin)) for k,v in output_coverage.iteritems() }  
    subsets = {k:subset_vec(v,args.w) for k,v in output_coverage.iteritems()} 
    #convert to dataframe for saving 
-   enrich_df = pd.DataFrame.from_dict(enrichments, orient='index') 
+   enrich_df = pd.DataFrame.from_dict(enrichments, orient='index')  
    enrich_df.index = [x.replace('"', '') for x in enrich_df.index.values ] 
    enrich_df.index.name = 'gene'
    enrich_df.columns = ['enrichment'] 
@@ -206,8 +216,8 @@ def main():
       if not os.path.exists(a): 
          os.mkdir(a)
 
-   out_fn = cov_dir+ args.bamname+'_coverage.h5'
-   enrich_fn = enrich_dir+args.bamname+'_enrichment.csv'
+   out_fn = cov_dir+args.pname+'_p_'+ args.bamname+'_s_coverage.h5'
+   enrich_fn = enrich_dir+args.pname+'_p_'+args.bamname+'_s_enrichment.csv'
    #saveHDF(subsets, out_fn, 'group')
    subsets = pd.DataFrame.from_dict(subsets, orient='index')
    subsets.index = [x.replace('"', '') for x in subsets.index.values ] 
